@@ -13,6 +13,7 @@ python src/main.py \
     --stride 8 \
     --optimizer RAdam \
     --d_model 768 \
+    --batch_size 8 \
     --pos_encoding learnable \
     --task classification \
     --key_metric accuracy

@@ -142,8 +142,8 @@ def main(config):
 
     # Create model
     logger.info("Creating model ...")
-    # model = model_factory(config, my_data)
-    model = gpt4ts(config, my_data)
+    model = model_factory(config, my_data)
+    # model = gpt4ts(config, my_data)
 
     if config['freeze']:
         for name, param in model.named_parameters():
