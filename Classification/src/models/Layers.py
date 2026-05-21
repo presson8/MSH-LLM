@@ -2,7 +2,10 @@ from torch.functional import align_tensors
 import torch.nn as nn
 
 from torch.nn.modules.linear import Linear
-from .SubLayers import MultiHeadAttention, PositionwiseFeedForward
+try:
+    from .SubLayers import MultiHeadAttention, PositionwiseFeedForward
+except ModuleNotFoundError:
+    MultiHeadAttention = PositionwiseFeedForward = None
 import torch
 from .embed import DataEmbedding, CustomEmbedding
 import math

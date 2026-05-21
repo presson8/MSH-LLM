@@ -141,7 +141,7 @@ class Options(object):
                                  help='If set, freezes all layer parameters except for the output layer. Also removes dropout except before the output layer')
 
         # Model
-        self.parser.add_argument('--model', choices={"transformer", "LINEAR"}, default="transformer",
+        self.parser.add_argument('--model', choices={"transformer", "LINEAR", "MSHLLM", "mshllm"}, default="transformer",
                                  help="Model class")
         self.parser.add_argument('--max_seq_len', type=int,
                                  help="""Maximum input sequence length. Determines size of transformer layers.
@@ -167,6 +167,31 @@ class Options(object):
         self.parser.add_argument('--normalization_layer', choices={'BatchNorm', 'LayerNorm'}, default='BatchNorm',
                                  help='Normalization layer to be used internally in transformer encoder')
 
+        # MSH-LLM
+        self.parser.add_argument('--window_size', type=str, default='4,2',
+                                 help='Comma separated multi-scale window sizes for MSHLLM')
+        self.parser.add_argument('--inner_size', type=int, default=2)
+        self.parser.add_argument('--CSCM', type=str, default='Bottleneck_Construct')
+        self.parser.add_argument('--d_ff', type=int, default=None,
+                                 help='MSHLLM feed-forward/reprogramming dimension. Defaults to dim_feedforward.')
+        self.parser.add_argument('--llm_model', type=str, default='GPT2', choices={'GPT2', 'LLAMA', 'BERT'},
+                                 help='Frozen LLM backbone type for MSHLLM')
+        self.parser.add_argument('--llm_dim', type=int, default=768,
+                                 help='LLM hidden dimension')
+        self.parser.add_argument('--llm_layers', type=int, default=12)
+        self.parser.add_argument('--llm_model_path', type=str, default=None,
+                                 help='Optional local pretrained LLM directory')
+        self.parser.add_argument('--llm_pretrain', action='store_true',
+                                 help='Load pretrained LLM weights instead of random initialization')
+        self.parser.add_argument('--prompt_domain', type=int, default=0)
+        self.parser.add_argument('--content', type=str, default='UEA multivariate time series classification dataset.')
+        self.parser.add_argument('--num_token', type=int, default=1000)
+        self.parser.add_argument('--hyper_num', type=str, default='50,20,10',
+                                 help='Comma separated number of hyperedges per scale for MSHLLM')
+        self.parser.add_argument('--learn_prompt', type=str, default='4,4,4',
+                                 help='Comma separated learned prompt token counts per scale for MSHLLM')
+        self.parser.add_argument('--prototypes_num', type=int, default=1000)
+
     def parse(self):
 
         args = self.parser.parse_args()
@@ -181,6 +206,11 @@ class Options(object):
         if args.exclude_feats is not None:
             args.exclude_feats = [int(i) for i in args.exclude_feats.split(',')]
         args.mask_feats = [int(i) for i in args.mask_feats.split(',')]
+        args.window_size = [int(i) for i in str(args.window_size).split(',') if str(i).strip()]
+        args.hyper_num = [int(i) for i in str(args.hyper_num).split(',') if str(i).strip()]
+        args.learn_prompt = [int(i) for i in str(args.learn_prompt).split(',') if str(i).strip()]
+        if args.d_ff is None:
+            args.d_ff = args.dim_feedforward
 
         if args.val_pattern is not None:
             args.val_ratio = 0

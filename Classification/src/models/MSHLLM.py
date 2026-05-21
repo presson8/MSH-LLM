@@ -7,7 +7,15 @@ from transformers import LlamaConfig, LlamaModel, LlamaTokenizer, GPT2Config, GP
     BertModel, BertTokenizer
 from layers.Embed import PatchEmbedding
 import transformers
-from layers.StandardNorm import Normalize
+try:
+    from layers.StandardNorm import Normalize
+except ModuleNotFoundError:
+    class Normalize(nn.Module):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+        def forward(self, x, *args, **kwargs):
+            return x
 
 
 import math
@@ -17,16 +25,35 @@ import math
 # from .Layers import get_mask, get_subsequent_mask, refer_points, get_k_q, get_q_k
 import torch.nn.functional as F
 import numpy as np
-from torch_geometric.nn import MessagePassing
+try:
+    from torch_geometric.nn import MessagePassing
+    from torch_geometric.nn.inits import glorot, zeros
+    from torch_geometric.utils import add_self_loops, degree, softmax, scatter
+except ModuleNotFoundError:
+    class MessagePassing(nn.Module):
+        def __init__(self, *args, **kwargs):
+            super().__init__()
+
+    def glorot(tensor):
+        if tensor is not None:
+            nn.init.xavier_uniform_(tensor)
+
+    def zeros(tensor):
+        if tensor is not None:
+            nn.init.zeros_(tensor)
+
+    def degree(index, num_nodes=None, dtype=None):
+        num_nodes = int(num_nodes or (index.max().item() + 1))
+        out = torch.zeros(num_nodes, dtype=dtype or torch.float32, device=index.device)
+        return out.scatter_add_(0, index, torch.ones_like(index, dtype=out.dtype))
+
+    add_self_loops = softmax = scatter = None
+
 import torch.nn.init as init
 from torch.nn import Parameter
-from torch_geometric.nn.inits import glorot, zeros
-from torch_geometric.utils import add_self_loops, degree, softmax
 
-from .Layers import EncoderLayer, Decoder, Predictor
 from .Layers import Bottleneck_Construct, Conv_Construct, MaxPooling_Construct, AvgPooling_Construct
 from .embed import DataEmbedding, CustomEmbedding,DataEmbedding_new
-from torch_geometric.utils import scatter
 
 transformers.logging.set_verbosity_error()
 
@@ -53,6 +80,7 @@ class Model(nn.Module):
         self.task_name = configs.task_name
         self.pred_len = configs.pred_len
         self.seq_len = configs.seq_len
+        self.max_len = configs.seq_len
         self.d_ff = configs.d_ff
         self.top_k = 5
         self.d_llm = configs.llm_dim
@@ -85,155 +113,94 @@ class Model(nn.Module):
         self.hyperedge_atten = SelfAttentionLayer(configs)
         self.proto_num=configs.prototypes_num
 
-        self.weight = nn.Parameter(torch.randn(self.pred_len, 76))
+        self.weight = nn.Parameter(torch.randn(max(self.pred_len, 1), 76))
         self.CMA = nn.ModuleList()
         self.prototype=nn.ModuleList()
         self.lastmap = None
         self.dimtrans=nn.Linear(self.d_llm,self.enc_in)
-        self.lentrans=nn.Linear(self.hyper_num1[0],self.pred_len)
+        self.lentrans=nn.Linear(self.hyper_num1[0], max(self.pred_len, 1))
 
 
 
         ###LLM_load
-        if configs.llm_model == 'LLAMA':
-            # self.llama_config = LlamaConfig.from_pretrained('/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/')
-            model_dir="/mnt/external/szj/szj/Llama-2-7b-hf/Llama-2-7b-hf/"
+        self.tokenizer = None
+        self.llm_pretrain = getattr(configs, 'llm_pretrain', False)
+        model_dir = getattr(configs, 'llm_model_path', None)
+        if not self.llm_pretrain:
+            if configs.llm_model != 'GPT2':
+                raise ValueError('Random initialization is currently supported for GPT2 only')
+            self.gpt2_config = GPT2Config(
+                n_embd=self.d_llm,
+                n_layer=configs.llm_layers,
+                n_head=configs.n_heads,
+                n_positions=1024,
+                n_ctx=1024,
+                vocab_size=50257,
+            )
+            self.gpt2_config.output_attentions = True
+            self.gpt2_config.output_hidden_states = True
+            self.llm_model = GPT2Model(self.gpt2_config)
+        elif configs.llm_model == 'LLAMA':
+            model_dir = model_dir or "/mnt/external/szj/szj/Llama-2-7b-hf/Llama-2-7b-hf/"
             self.llama_config = LlamaConfig.from_pretrained(model_dir)
             self.llama_config.num_hidden_layers = configs.llm_layers
             self.llama_config.output_attentions = True
             self.llama_config.output_hidden_states = True
-            try:
-                self.llm_model = LlamaModel.from_pretrained(
-                    # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/",
-                    # 'huggyllama/llama-7b',
-                    model_dir,
-                    trust_remote_code=True,
-                    local_files_only=True,
-                    config=self.llama_config,
-                    # load_in_4bit=True
-                )
-            except EnvironmentError:  # downloads model from HF is not already done
-                print("Local model files not found. Attempting to download...")
-                self.llm_model = LlamaModel.from_pretrained(
-                    # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/",
-                    # 'huggyllama/llama-7b',
-                    model_dir,
-                    trust_remote_code=True,
-                    local_files_only=False,
-                    config=self.llama_config,
-                    # load_in_4bit=True
-                )
-            try:
-                self.tokenizer = LlamaTokenizer.from_pretrained(
-                    # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/tokenizer.model",
-                    # 'huggyllama/llama-7b',
-                    model_dir,
-                    trust_remote_code=True,
-                    local_files_only=True
-                )
-            except EnvironmentError:  # downloads the tokenizer from HF if not already done
-                print("Local tokenizer files not found. Atempting to download them..")
-                self.tokenizer = LlamaTokenizer.from_pretrained(
-                    # "/mnt/alps/modelhub/pretrained_model/LLaMA/7B_hf/tokenizer.model",
-                    # 'huggyllama/llama-7b',
-                    model_dir,
-                    trust_remote_code=True,
-                    local_files_only=False
-                )
+            self.llm_model = LlamaModel.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+                config=self.llama_config,
+            )
+            self.tokenizer = LlamaTokenizer.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
         elif configs.llm_model == 'GPT2':
-            model_dir = "/mnt/external/szj/szj/GPT/GPT2_s/"
+            model_dir = model_dir or "/mnt/external/szj/szj/GPT/GPT2_s/"
             self.gpt2_config = GPT2Config.from_pretrained(model_dir)
-            # self.gpt2_config = GPT2Config.from_pretrained('openai-community/gpt2')
-
             self.gpt2_config.num_hidden_layers = configs.llm_layers
             self.gpt2_config.output_attentions = True
             self.gpt2_config.output_hidden_states = True
-            try:
-                self.llm_model = GPT2Model.from_pretrained(
-                    model_dir,
-                    trust_remote_code=True,
-                    local_files_only=True,
-                    config=self.gpt2_config,
-                )
-
-                # self.llm_model = GPT2Model.from_pretrained(
-                #     'openai-community/gpt2',
-                #     trust_remote_code=True,
-                #     local_files_only=True,
-                #     config=self.gpt2_config,
-                # )
-            except EnvironmentError:  # downloads model from HF is not already done
-                print("Local model files not found. Attempting to download...")
-                self.llm_model = GPT2Model.from_pretrained(
-                    'openai-community/gpt2',
-                    trust_remote_code=True,
-                    local_files_only=False,
-                    config=self.gpt2_config,
-                )
-
-            try:
-                self.tokenizer = GPT2Tokenizer.from_pretrained(
-                    model_dir,
-                    trust_remote_code=True,
-                    local_files_only=True
-                )
-
-                # self.tokenizer = GPT2Tokenizer.from_pretrained(
-                #     'openai-community/gpt2',
-                #     trust_remote_code=True,
-                #     local_files_only=True
-                # )
-            except EnvironmentError:  # downloads the tokenizer from HF if not already done
-                print("Local tokenizer files not found. Atempting to download them..")
-                self.tokenizer = GPT2Tokenizer.from_pretrained(
-                    'openai-community/gpt2',
-                    trust_remote_code=True,
-                    local_files_only=False
-                )
+            self.llm_model = GPT2Model.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+                config=self.gpt2_config,
+            )
+            self.tokenizer = GPT2Tokenizer.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
         elif configs.llm_model == 'BERT':
-            self.bert_config = BertConfig.from_pretrained('google-bert/bert-base-uncased')
-
+            model_dir = model_dir or 'google-bert/bert-base-uncased'
+            self.bert_config = BertConfig.from_pretrained(model_dir)
             self.bert_config.num_hidden_layers = configs.llm_layers
             self.bert_config.output_attentions = True
             self.bert_config.output_hidden_states = True
-            try:
-                self.llm_model = BertModel.from_pretrained(
-                    'google-bert/bert-base-uncased',
-                    trust_remote_code=True,
-                    local_files_only=True,
-                    config=self.bert_config,
-                )
-            except EnvironmentError:  # downloads model from HF is not already done
-                print("Local model files not found. Attempting to download...")
-                self.llm_model = BertModel.from_pretrained(
-                    'google-bert/bert-base-uncased',
-                    trust_remote_code=True,
-                    local_files_only=False,
-                    config=self.bert_config,
-                )
-
-            try:
-                self.tokenizer = BertTokenizer.from_pretrained(
-                    'google-bert/bert-base-uncased',
-                    trust_remote_code=True,
-                    local_files_only=True
-                )
-            except EnvironmentError:  # downloads the tokenizer from HF if not already done
-                print("Local tokenizer files not found. Atempting to download them..")
-                self.tokenizer = BertTokenizer.from_pretrained(
-                    'google-bert/bert-base-uncased',
-                    trust_remote_code=True,
-                    local_files_only=False
-                )
+            self.llm_model = BertModel.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+                config=self.bert_config,
+            )
+            self.tokenizer = BertTokenizer.from_pretrained(
+                model_dir,
+                trust_remote_code=True,
+                local_files_only=True,
+            )
         else:
             raise Exception('LLM model is not defined')
 
-        if self.tokenizer.eos_token:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-        else:
-            pad_token = '[PAD]'
-            self.tokenizer.add_special_tokens({'pad_token': pad_token})
-            self.tokenizer.pad_token = pad_token
+        if self.tokenizer is not None:
+            if self.tokenizer.eos_token:
+                self.tokenizer.pad_token = self.tokenizer.eos_token
+            else:
+                pad_token = '[PAD]'
+                self.tokenizer.add_special_tokens({'pad_token': pad_token})
+                self.tokenizer.pad_token = pad_token
 
         for param in self.llm_model.parameters():
             param.requires_grad = False
@@ -246,7 +213,7 @@ class Model(nn.Module):
         self.dropout = nn.Dropout(configs.dropout)
 
         self.patch_embedding = PatchEmbedding(
-            configs.d_model, self.patch_len, self.stride, configs.dropout)
+            configs.d_model, self.patch_len, self.stride, 0, configs.dropout)
 
         self.word_embeddings = self.llm_model.get_input_embeddings().weight
         self.vocab_size = self.word_embeddings.shape[0]
@@ -261,6 +228,9 @@ class Model(nn.Module):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             self.output_projection = FlattenHead(configs.enc_in, self.head_nf, self.pred_len,
                                                  head_dropout=configs.dropout)
+        elif self.task_name == 'classification':
+            self.num_classes = configs.num_class
+            self.output_layer = nn.Linear(self.d_llm, self.num_classes)
         else:
             raise NotImplementedError
 
@@ -269,7 +239,7 @@ class Model(nn.Module):
 
         for i in range (len(self.hyper_num1)):
             self.hyconv.append(HypergraphConv(configs.enc_in, configs.enc_in))
-            param=nn.Parameter(torch.randn(self.batch, 4, self.d_llm))
+            param=nn.Parameter(torch.randn(1, self.len_prompt[i], self.d_llm))
             init.xavier_uniform_(param)
             self.soft_prompt.append(param)
             self.CMA.append(ReprogrammingLayer(configs.d_model, configs.n_heads, self.d_ff, self.d_llm))
@@ -281,10 +251,12 @@ class Model(nn.Module):
 
 
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc=None, x_dec=None, x_mark_dec=None, mask=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
             return dec_out[:, -self.pred_len:, :]
+        if self.task_name == 'classification':
+            return self.classification(x_enc, x_mark_enc)
         return None
 
     def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
@@ -379,7 +351,8 @@ class Model(nn.Module):
         for i in range(len(self.hyper_num1)):
             # lpromptidx = torch.arange(self.len_prompt[i]).to(x_enc.device)
             scale_out=self.CMA[i](sum_hyper_list[i],text_prototypes[i].permute(1, 0),text_prototypes[i].permute(1, 0))
-            scale_result=torch.cat([scale_out,self.soft_prompt[i]],dim=1)
+            soft_prompt = self.soft_prompt[i].expand(scale_out.size(0), -1, -1)
+            scale_result=torch.cat([scale_out,soft_prompt],dim=1)
             if i==0:
                 result_all=scale_result
             else:
@@ -393,6 +366,81 @@ class Model(nn.Module):
 
         dec_out=dec_out*std_enc + mean_enc
         return dec_out
+
+    def classification(self, x_enc, padding_masks=None):
+        x_enc = x_enc.float()
+        if padding_masks is not None:
+            x_enc = x_enc * padding_masks.unsqueeze(-1).to(x_enc.dtype)
+
+        mean_enc = x_enc.mean(1, keepdim=True).detach()
+        std_enc = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5).detach()
+        x_enc = (x_enc - mean_enc) / std_enc
+
+        B = x_enc.size(0)
+        prompt_embeddings = self._classification_prompt_embeddings(B, x_enc.device)
+        result_all = self._multi_scale_reprogramming(x_enc)
+        llm_inputs = torch.cat([prompt_embeddings, result_all], dim=1)
+        hidden = self.llm_model(inputs_embeds=llm_inputs).last_hidden_state
+        hidden = hidden[:, prompt_embeddings.size(1):, :]
+        pooled = hidden.mean(dim=1)
+        return self.output_layer(self.dropout(pooled))
+
+    def _classification_prompt_embeddings(self, batch_size, device):
+        if self.tokenizer is None:
+            return self.Lprompt[0](torch.arange(self.len_prompt[0], device=device)).unsqueeze(0).expand(batch_size, -1, -1)
+
+        prompt = [
+            f"<|start_prompt|>Dataset description: {self.description} "
+            f"Task description: classify this multivariate time series.<|end_prompt|>"
+            for _ in range(batch_size)
+        ]
+        token_ids = self.tokenizer(prompt, return_tensors="pt", padding=True, truncation=True, max_length=128).input_ids
+        return self.llm_model.get_input_embeddings()(token_ids.to(device))
+
+    def _multi_scale_reprogramming(self, x_enc):
+        adj_matrix = self.multiadphyper(x_enc)
+        seq_enc = self.conv_layers(x_enc)
+        source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0))
+        sum_hyper_list = []
+        text_prototypes = []
+
+        for i in range(len(self.hyper_num1)):
+            mask = torch.as_tensor(adj_matrix[i], device=x_enc.device, dtype=torch.long)
+            node_value = seq_enc[i].permute(0, 2, 1)
+            edge_sums = {}
+            counts_num = {}
+            for raw_node_id, raw_edge_id in zip(mask[0], mask[1]):
+                edge_id = int(raw_edge_id.item())
+                node_id = int(raw_node_id.item())
+                if edge_id not in edge_sums:
+                    edge_sums[edge_id] = node_value[:, :, node_id]
+                    counts_num[edge_id] = 1
+                else:
+                    edge_sums[edge_id] = edge_sums[edge_id] + node_value[:, :, node_id]
+                    counts_num[edge_id] += 1
+
+            scale_values = []
+            for edge_id in sorted(edge_sums):
+                scale_values.append((edge_sums[edge_id] / counts_num[edge_id]).unsqueeze(1))
+            sum_hyper = torch.cat(scale_values, dim=1)
+            if sum_hyper.size(1) < self.hyper_num1[i]:
+                padding = self.hyper_num1[i] - sum_hyper.size(1)
+                sum_hyper = torch.nn.functional.pad(sum_hyper, (0, 0, 0, padding, 0, 0))
+            else:
+                sum_hyper = sum_hyper[:, :self.hyper_num1[i], :]
+            sum_hyper_list.append(self.embedtra(sum_hyper))
+
+            if i == 0:
+                text_prototypes.append(self.prototype[i](source_embeddings))
+            else:
+                text_prototypes.append(self.prototype[i](text_prototypes[i - 1]))
+
+        result_all = []
+        for i in range(len(self.hyper_num1)):
+            scale_out = self.CMA[i](sum_hyper_list[i], text_prototypes[i].permute(1, 0), text_prototypes[i].permute(1, 0))
+            soft_prompt = self.soft_prompt[i].expand(scale_out.size(0), -1, -1)
+            result_all.append(torch.cat([scale_out, soft_prompt], dim=1))
+        return torch.cat(result_all, dim=1)
 
     def calcute_lags(self, x_enc):
         q_fft = torch.fft.rfft(x_enc.permute(0, 2, 1).contiguous(), dim=-1)
@@ -450,6 +498,7 @@ class multi_adaptive_hypergraoh(nn.Module):
     def __init__(self,configs):
         super(multi_adaptive_hypergraoh, self).__init__()
         self.seq_len = configs.seq_len
+        self.max_len = configs.seq_len
         self.window_size=configs.window_size
         self.inner_size=configs.inner_size
         self.dim=configs.d_model

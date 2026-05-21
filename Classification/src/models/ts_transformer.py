@@ -1,10 +1,12 @@
 from typing import Optional, Any
+from types import SimpleNamespace
 import math
 
 import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
 from torch.nn.modules import MultiheadAttention, Linear, Dropout, BatchNorm1d, TransformerEncoderLayer
+
 
 
 def model_factory(config, data):
@@ -33,6 +35,20 @@ def model_factory(config, data):
 
     if (task == "classification") or (task == "regression"):
         num_labels = len(data.class_names) if task == "classification" else data.labels_df.shape[1]  # dimensionality of labels
+        if config['model'].lower() == 'mshllm':
+            if task != "classification":
+                raise ValueError("MSHLLM is currently wired for classification in this pipeline")
+            from models.MSHLLM import Model as MSHLLMModel
+            msh_config = SimpleNamespace(**config)
+            msh_config.task_name = 'classification'
+            msh_config.seq_len = max_seq_len
+            msh_config.enc_in = feat_dim
+            msh_config.c_out = num_labels
+            msh_config.num_class = num_labels
+            msh_config.pred_len = getattr(msh_config, 'pred_len', 1)
+            msh_config.n_heads = config['num_heads']
+            msh_config.patch_len = config['patch_size']
+            return MSHLLMModel(msh_config)
         if config['model'] == 'LINEAR':
             return DummyTSTransformerEncoderClassiregressor(feat_dim, max_seq_len, config['d_model'],
                                                             config['num_heads'],
