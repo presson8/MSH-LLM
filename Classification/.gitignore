@@ -6,3 +6,5 @@ __pycache__/
 *.pyo
 *.bak
 .ipynb_checkpoints/
+pretrained_models/
+U55RMTQM/
