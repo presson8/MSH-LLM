@@ -394,6 +394,7 @@ class SupervisedRunner(BaseRunner):
 
         epoch_loss = 0  # total loss of epoch
         total_samples = 0  # total samples in epoch
+        total_correct = 0
 
         for i, batch in enumerate(self.dataloader):
 
@@ -428,10 +429,15 @@ class SupervisedRunner(BaseRunner):
             with torch.no_grad():
                 total_samples += len(loss)
                 epoch_loss += batch_loss.item()  # add total loss of batch
+                if self.classification:
+                    predicted_classes = torch.argmax(predictions, dim=1)
+                    total_correct += torch.sum(predicted_classes == targets.long().squeeze(-1)).item()
 
         epoch_loss = epoch_loss / total_samples  # average loss per sample for whole epoch
         self.epoch_metrics['epoch'] = epoch_num
         self.epoch_metrics['loss'] = epoch_loss
+        if self.classification:
+            self.epoch_metrics['accuracy'] = total_correct / total_samples
         return self.epoch_metrics
 
     def evaluate(self, epoch_num=None, keep_all=True):

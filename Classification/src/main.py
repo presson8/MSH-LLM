@@ -105,6 +105,17 @@ def main(config):
         if test_indices is None:
             test_indices = []
 
+    if config.get('train_limit_per_class') is not None:
+        if config['task'] != 'classification':
+            raise ValueError("train_limit_per_class is only supported for classification")
+        selected_train_indices = []
+        train_labels = my_data.labels_df.loc[train_indices].iloc[:, 0]
+        for _, class_indices in train_labels.groupby(train_labels).groups.items():
+            selected_train_indices.extend(list(class_indices)[:config['train_limit_per_class']])
+        train_indices = selected_train_indices
+        logger.info("Limited training set to {} samples (up to {} per class)".format(
+            len(train_indices), config['train_limit_per_class']))
+
     logger.info("{} samples may be used for training".format(len(train_indices)))
     logger.info("{} samples will be used for validation".format(len(val_indices)))
     logger.info("{} samples will be used for testing".format(len(test_indices)))

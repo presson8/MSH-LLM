@@ -86,6 +86,8 @@ class Options(object):
                             The columns correspond to features, rows correspond to mean, std or min, max.""")
         self.parser.add_argument('--subsample_factor', type=int,
                                  help='Sub-sampling factor used for long sequences: keep every kth sample')
+        self.parser.add_argument('--train_limit_per_class', type=int, default=None,
+                                 help='Classification debugging: keep at most this many training samples per class')
         # Training process
         self.parser.add_argument('--task', choices={"imputation", "transduction", "classification", "regression"},
                                  default="imputation",
