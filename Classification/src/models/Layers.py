@@ -5,6 +5,8 @@ from torch.nn.modules.linear import Linear
 try:
     from .SubLayers import MultiHeadAttention, PositionwiseFeedForward
 except ModuleNotFoundError:
+    # Optional dependency fallback: MSHLLM smoke imports only CSCM constructors
+    # from this file; the legacy attention layers are unused in that path.
     MultiHeadAttention = PositionwiseFeedForward = None
 import torch
 from .embed import DataEmbedding, CustomEmbedding

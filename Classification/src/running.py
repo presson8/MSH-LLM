@@ -473,7 +473,7 @@ class SupervisedRunner(BaseRunner):
 
         if self.classification:
             predictions = torch.from_numpy(np.concatenate(per_batch['predictions'], axis=0))
-            probs = torch.nn.functional.softmax(predictions)  # (total_samples, num_classes) est. prob. for each class and sample
+            probs = torch.nn.functional.softmax(predictions, dim=1)  # (total_samples, num_classes) est. prob. for each class and sample
             predictions = torch.argmax(probs, dim=1).cpu().numpy()  # (total_samples,) int class index for each sample
             probs = probs.cpu().numpy()
             targets = np.concatenate(per_batch['targets'], axis=0).flatten()

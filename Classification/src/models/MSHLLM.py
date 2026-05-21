@@ -10,6 +10,8 @@ import transformers
 try:
     from layers.StandardNorm import Normalize
 except ModuleNotFoundError:
+    # Optional dependency fallback: classification smoke path instantiates
+    # Normalize for legacy forecasting compatibility but does not call it.
     class Normalize(nn.Module):
         def __init__(self, *args, **kwargs):
             super().__init__()
@@ -30,6 +32,9 @@ try:
     from torch_geometric.nn.inits import glorot, zeros
     from torch_geometric.utils import add_self_loops, degree, softmax, scatter
 except ModuleNotFoundError:
+    # Optional dependency fallback: the smoke classification path builds the
+    # legacy HypergraphConv module but does not execute it. Install PyG before
+    # relying on HypergraphConv in the forward path.
     class MessagePassing(nn.Module):
         def __init__(self, *args, **kwargs):
             super().__init__()
