@@ -13,8 +13,8 @@ ${PYTHON_BIN:-conda run -n mshllm python} src/main.py \
     --max_seq_len 128 \
     --pattern TRAIN \
     --val_pattern TEST \
-    --epochs 50 \
-    --val_interval 10 \
+    --epochs 100 \
+    --val_interval 20 \
     --lr 0.001 \
     --patch_size 8 \
     --stride 8 \

@@ -235,7 +235,9 @@ class Model(nn.Module):
                                                  head_dropout=configs.dropout)
         elif self.task_name == 'classification':
             self.num_classes = configs.num_class
-            self.output_layer = nn.Linear(self.d_llm, self.num_classes)
+            self.readout_query = nn.Parameter(torch.empty(1, 1, self.d_llm))
+            init.xavier_uniform_(self.readout_query)
+            self.output_layer = nn.Linear(self.d_llm * 2, self.num_classes)
         else:
             raise NotImplementedError
 
@@ -387,7 +389,10 @@ class Model(nn.Module):
         llm_inputs = torch.cat([prompt_embeddings, result_all], dim=1)
         hidden = self.llm_model(inputs_embeds=llm_inputs).last_hidden_state
         hidden = hidden[:, prompt_embeddings.size(1):, :]
-        pooled = hidden.mean(dim=1)
+        attn_scores = (hidden * self.readout_query).sum(dim=-1) / sqrt(self.d_llm)
+        attn_weights = torch.softmax(attn_scores, dim=1).unsqueeze(-1)
+        attn_pooled = torch.sum(hidden * attn_weights, dim=1)
+        pooled = torch.cat([attn_pooled, hidden.max(dim=1).values], dim=1)
         return self.output_layer(self.dropout(pooled))
 
     def _classification_prompt_embeddings(self, batch_size, device):
@@ -403,36 +408,19 @@ class Model(nn.Module):
         return self.llm_model.get_input_embeddings()(token_ids.to(device))
 
     def _multi_scale_reprogramming(self, x_enc):
-        adj_matrix = self.multiadphyper(x_enc)
+        incidence_matrices = self.multiadphyper.soft_incidence_matrices(x_enc)
         seq_enc = self.conv_layers(x_enc)
         source_embeddings = self.mapping_layer(self.word_embeddings.permute(1, 0))
         sum_hyper_list = []
         text_prototypes = []
 
         for i in range(len(self.hyper_num1)):
-            mask = torch.as_tensor(adj_matrix[i], device=x_enc.device, dtype=torch.long)
             node_value = seq_enc[i].permute(0, 2, 1)
-            edge_sums = {}
-            counts_num = {}
-            for raw_node_id, raw_edge_id in zip(mask[0], mask[1]):
-                edge_id = int(raw_edge_id.item())
-                node_id = int(raw_node_id.item())
-                if edge_id not in edge_sums:
-                    edge_sums[edge_id] = node_value[:, :, node_id]
-                    counts_num[edge_id] = 1
-                else:
-                    edge_sums[edge_id] = edge_sums[edge_id] + node_value[:, :, node_id]
-                    counts_num[edge_id] += 1
-
-            scale_values = []
-            for edge_id in sorted(edge_sums):
-                scale_values.append((edge_sums[edge_id] / counts_num[edge_id]).unsqueeze(1))
-            sum_hyper = torch.cat(scale_values, dim=1)
-            if sum_hyper.size(1) < self.hyper_num1[i]:
-                padding = self.hyper_num1[i] - sum_hyper.size(1)
-                sum_hyper = torch.nn.functional.pad(sum_hyper, (0, 0, 0, padding, 0, 0))
-            else:
-                sum_hyper = sum_hyper[:, :self.hyper_num1[i], :]
+            incidence = incidence_matrices[i].to(node_value.dtype)
+            if incidence.size(0) != node_value.size(2):
+                incidence = incidence[:node_value.size(2)]
+            weights = incidence / incidence.sum(dim=0, keepdim=True).clamp_min(1e-6)
+            sum_hyper = torch.einsum('nh,bdn->bhd', weights, node_value)
             sum_hyper_list.append(self.embedtra(sum_hyper))
 
             if i == 0:
@@ -577,6 +565,21 @@ class multi_adaptive_hypergraoh(nn.Module):
 
         a=hyperedge_all
         return a
+
+    def soft_incidence_matrices(self, x):
+        node_num = [self.seq_len]
+        for i in range(len(self.window_size)):
+            node_num.append(math.floor(node_num[i] / self.window_size[i]))
+
+        incidence_all = []
+        for i in range(len(self.hyper_num)):
+            hypidxc = torch.arange(self.hyper_num[i], device=x.device)
+            nodeidx = torch.arange(node_num[i], device=x.device)
+            hyperen = torch.tanh(self.embedhy[i](hypidxc) * self.beta)
+            nodeec = torch.tanh(self.embednod[i](nodeidx) * self.phi)
+            scores = self.linear[i](F.relu(torch.mm(nodeec, hyperen.transpose(1, 0))))
+            incidence_all.append(F.softmax(scores, dim=1))
+        return incidence_all
 
 class SelfAttentionLayer(nn.Module):
     def __init__(self, configs):
