@@ -3,17 +3,17 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
-python src/main.py \
+${PYTHON_BIN:-conda run -n mshllm python} src/main.py \
     --output_dir experiments \
-    --comment "classification with MSHLLM pretrained GPT-2 full short sanity" \
-    --name EthanolConcentration_MSHLLM_gpt2_full_short \
+    --comment "classification with MSHLLM pretrained GPT-2 full config tiny overfit diagnostic" \
+    --name EthanolConcentration_MSHLLM_gpt2_full_tiny_overfit \
     --records_file Classification_records.xls \
     --data_dir ./datasets/EthanolConcentration \
     --data_class tsra \
     --pattern TRAIN \
     --val_pattern TEST \
-    --epochs 3 \
-    --val_interval 1 \
+    --epochs 100 \
+    --val_interval 20 \
     --lr 0.0005 \
     --patch_size 8 \
     --stride 8 \
@@ -38,4 +38,5 @@ python src/main.py \
     --window_size 4,2 \
     --hyper_num 50,20,10 \
     --learn_prompt 4,4,4 \
-    --content "EthanolConcentration UEA multivariate time series classification dataset."
+    --train_limit_per_class 8 \
+    --content "EthanolConcentration full-configuration tiny overfit diagnostic with 8 samples per class."

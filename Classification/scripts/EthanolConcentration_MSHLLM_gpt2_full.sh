@@ -3,7 +3,7 @@ set -euo pipefail
 
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
-${PYTHON_BIN:-conda run -n mshllm python} src/main.py \
+python src/main.py \
     --output_dir experiments \
     --comment "classification with MSHLLM pretrained GPT-2 full" \
     --name EthanolConcentration_MSHLLM_gpt2_full \
